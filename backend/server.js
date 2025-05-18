@@ -16,6 +16,21 @@ app.use(cors());
 app.use(express.json());
 app.use(morgan('dev'));
 
+const fs = require('fs');
+const path = require('path');
+
+const tempDir = path.join(__dirname, 'temp');
+if (!fs.existsSync(tempDir)) {
+  fs.mkdirSync(tempDir, { recursive: true });
+}
+
+
+app.use('/temp', express.static(path.join(__dirname, 'temp')));
+
+
+
+
+
 // Import routes
 const authRoutes = require('./routes/auth.routes');
 const hospitalRoutes = require('./routes/hospital.routes');
@@ -29,6 +44,7 @@ app.use('/api/hospitals', hospitalRoutes);
 app.use('/api/patients', patientRoutes);
 app.use('/api/doctors', doctorRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/temp', express.static(path.join(__dirname, 'temp')));
 
 // Root route
 app.get('/', (req, res) => {

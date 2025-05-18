@@ -86,7 +86,7 @@ Patient details: Name: ${chat.patient.name}, Age: ${chat.patient.age}, Gender: $
         
         // Updated OpenAI API call
         const completion = await openai.chat.completions.create({
-          model: 'gpt-3.5-turbo',
+          model: 'gpt-4O-mini',
           messages,
         });
         

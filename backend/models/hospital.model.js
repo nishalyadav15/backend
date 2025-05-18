@@ -27,6 +27,42 @@ const hospitalSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    // New fields for hospital branding
+    branding: {
+      logo: {
+        type: String, // Base64 encoded image or URL
+        default: null,
+      },
+      primaryColor: {
+        type: String,
+        default: '#1a56db',
+      },
+      letterheadText: {
+        type: String,
+        default: '',
+      },
+    },
+    // Doctor information (since hospital is the doctor)
+    doctorName: {
+      type: String,
+      default: '',
+    },
+    doctorSignature: {
+      type: String, // Base64 encoded image
+      default: null,
+    },
+    doctorDesignation: {
+      type: String,
+      default: '',
+    },
+    doctorRegistrationNumber: {
+      type: String,
+      default: '',
+    },
+    email: {
+      type: String,
+      default: '',
+    },
   },
   { timestamps: true }
 );
