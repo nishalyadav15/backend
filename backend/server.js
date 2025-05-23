@@ -25,7 +25,12 @@ if (!fs.existsSync(tempDir)) {
 }
 
 
+app.use(express.urlencoded({ extended: true }));
+
+// ADD THIS LINE HERE:
 app.use('/temp', express.static(path.join(__dirname, 'temp')));
+
+
 
 
 

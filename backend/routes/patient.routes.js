@@ -8,6 +8,8 @@ const { authenticate, isAdmin } = require('../middleware/auth.middleware');
 const twilio = require('twilio');
 const path = require('path');
 const fs = require('fs');
+const cloudinary = require('cloudinary').v2;
+const axios = require('axios'); // Added missing semicolon
 
 // Initialize Twilio client (Only if environment variables are set)
 let twilioClient;
@@ -17,6 +19,12 @@ if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
     process.env.TWILIO_AUTH_TOKEN
   );
 }
+//configure cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
 
 // Get all patients for a hospital
 router.get('/', authenticate, async (req, res) => {
@@ -169,10 +177,7 @@ router.put('/:id', authenticate, async (req, res) => {
   }
 });
 
-// Update visit with prescription - SIMPLIFIED VERSION WITHOUT PDF GENERATION
-// Update visit with prescription - Update this section in routes/patient.routes.js
-
-// Update this section in routes/patient.routes.js
+// Update visit with prescription
 router.put('/:id/visit/:visitId', authenticate, async (req, res) => {
   try {
     console.log('Received visit update request');
@@ -232,6 +237,7 @@ router.put('/:id/visit/:visitId', authenticate, async (req, res) => {
     }
     
     // Send prescription to patient (either as PDF or text)
+// Send prescription to patient - USING EXPRESS STATIC FILES (NO CLOUDINARY)
     try {
       // Get hospital data for prescription
       const hospital = await Hospital.findById(hospitalId);
@@ -243,7 +249,6 @@ router.put('/:id/visit/:visitId', authenticate, async (req, res) => {
       // Import the PDF generation utility
       const { generatePrescriptionPDF } = require('../utils/pdf.utils');
       
-      // Generate the PDF file
       console.log('Generating PDF...');
       const { filePath, fileName } = await generatePrescriptionPDF(
         updatedVisit.prescription,
@@ -253,83 +258,146 @@ router.put('/:id/visit/:visitId', authenticate, async (req, res) => {
       );
       console.log('PDF generated at:', filePath);
       
-      // Make sure the server can serve this file
-      const baseUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 5000}`;
-      const pdfUrl = `${baseUrl}/temp/${fileName}`;
-      console.log('PDF URL:', pdfUrl);
-
       // Check if the file actually exists
       if (!fs.existsSync(filePath)) {
         throw new Error('PDF file was not created properly');
       }
       
-      // Set a timeout to ensure file is fully written
-      setTimeout(async () => {
-        if (twilioClient && process.env.TWILIO_PHONE_NUMBER) {
+      // Get file stats and validate
+      const stats = fs.statSync(filePath);
+      console.log(`Local PDF file size: ${stats.size} bytes`);
+      
+      if (stats.size === 0) {
+        throw new Error('Generated PDF file is empty');
+      }
+      
+      // Validate PDF header
+      const fileBuffer = fs.readFileSync(filePath);
+      const header = fileBuffer.toString('ascii', 0, 4);
+      console.log(`PDF header: "${header}"`);
+      
+      if (header !== '%PDF') {
+        throw new Error('Invalid PDF file - corrupted header');
+      }
+      
+      // SKIP CLOUDINARY - Use local server with ngrok/public URL
+      console.log('Using local server for file hosting...');
+      
+      // Use environment variable for the base URL (set this to your ngrok URL)
+      const baseUrl = process.env.PUBLIC_BASE_URL || process.env.NGROK_URL || 'https://your-ngrok-url.ngrok.io';
+      
+      if (baseUrl.includes('your-ngrok-url')) {
+        console.error('WARNING: Please set NGROK_URL in your .env file!');
+        console.log('1. Run: ngrok http 5000');
+        console.log('2. Copy the HTTPS URL from ngrok');
+        console.log('3. Add NGROK_URL=https://your-actual-ngrok-url.ngrok.io to your .env file');
+        throw new Error('NGROK_URL not configured. Please set up ngrok first.');
+      }
+      
+      // Use the working debug route (we confirmed this works!)
+      const pdfUrl = `${baseUrl}/api/patients/test-file/${fileName}`;
+      console.log('PDF URL (via working debug route):', pdfUrl);
+      
+      // Test the URL accessibility
+      console.log('Testing PDF URL accessibility...');
+      try {
+        const response = await axios.head(pdfUrl, { timeout: 10000 });
+        console.log('PDF URL test PASSED - Status:', response.status);
+        console.log('Content-Type:', response.headers['content-type']);
+        console.log('Content-Length:', response.headers['content-length']);
+      } catch (urlError) {
+        console.error('PDF URL test FAILED:', urlError.message);
+        console.error('Make sure:');
+        console.error('1. ngrok is running: ngrok http 5000');
+        console.error('2. Express static middleware is set up: app.use("/temp", express.static("temp"))');
+        console.error('3. NGROK_URL is set correctly in .env');
+        throw new Error('PDF URL is not accessible via ngrok');
+      }
+      
+      // Send WhatsApp message with PDF
+      if (twilioClient && process.env.TWILIO_PHONE_NUMBER) {
+        try {
+          console.log('Sending WhatsApp with PDF attachment...');
+          console.log('WhatsApp details:');
+          console.log('- To:', `whatsapp:+91${patient.contactNumber}`);
+          console.log('- From:', `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`);
+          console.log('- Media URL:', pdfUrl);
+          
+          const message = await twilioClient.messages.create({
+            body: `Hello ${patient.name}, your prescription is ready.`,
+            mediaUrl: [pdfUrl],
+            from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
+            to: `whatsapp:+91${patient.contactNumber}`,
+          });
+          
+          console.log('WhatsApp message sent successfully!');
+          console.log('- Message SID:', message.sid);
+          console.log('- Status:', message.status);
+          
+          // Delete the PDF file after 10 minutes (keep it longer for delivery)
+          setTimeout(() => {
+            try {
+              if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+                console.log('Deleted temporary PDF file after delivery');
+              }
+            } catch (fileError) {
+              console.error('Error deleting temporary file:', fileError);
+            }
+          }, 600000); // 10 minutes
+          
+        } catch (twilioError) {
+          console.error('Error sending WhatsApp with PDF:');
+          console.error('- Error code:', twilioError.code);
+          console.error('- Error message:', twilioError.message);
+          
+          // Fallback text message
           try {
-            console.log('Sending WhatsApp with PDF attachment');
-            // Send WhatsApp message with PDF attachment
-            const message = await twilioClient.messages.create({
-              body: `Hello ${patient.name}, your prescription is ready.`,
-              mediaUrl: [pdfUrl],
+            console.log('Sending fallback text message...');
+            await twilioClient.messages.create({
+              body: `Hello ${patient.name}, your prescription is ready. Please contact the clinic for your prescription document. Details: ${updatedVisit.prescription}`,
               from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
               to: `whatsapp:+91${patient.contactNumber}`,
             });
-            
-            console.log('WhatsApp message sent successfully:', message.sid);
-            
-            // Delete the PDF file after 5 minutes
-            setTimeout(() => {
-              try {
-                fs.unlinkSync(filePath);
-                console.log('Deleted temporary PDF file');
-              } catch (fileError) {
-                console.error('Error deleting temporary file:', fileError);
-              }
-            }, 300000); // 5 minutes
-          } catch (twilioError) {
-            console.error('Error sending WhatsApp with PDF:', twilioError);
-            
-            // Try sending a plain text message as fallback
-            try {
-              console.log('Sending fallback text message');
-              await twilioClient.messages.create({
-                body: `Hello ${patient.name}, your prescription is ready. Details: ${updatedVisit.prescription}`,
-                from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
-                to: `whatsapp:+91${patient.contactNumber}`,
-              });
-              console.log('Fallback text message sent successfully');
-            } catch (fallbackError) {
-              console.error('Error sending fallback message:', fallbackError);
-            }
-            
-            // Clean up the file
-            try {
-              fs.unlinkSync(filePath);
-            } catch (fileError) {
-              console.error('Error deleting temp file:', fileError);
-            }
+            console.log('Fallback text message sent successfully');
+          } catch (fallbackError) {
+            console.error('Error sending fallback message:', fallbackError);
           }
-        } else {
-          console.log('Twilio not configured, skipping WhatsApp message');
           
-          // Clean up the temp file if not sending via Twilio
+          // Clean up file on error
           try {
-            fs.unlinkSync(filePath);
-          } catch (fileError) {
-            console.error('Error deleting temp file:', fileError);
+            if (fs.existsSync(filePath)) {
+              fs.unlinkSync(filePath);
+            }
+          } catch (cleanupError) {
+            console.error('Error during cleanup:', cleanupError);
           }
         }
-      }, 1000); // Wait 1 second to ensure the file is readable
+      } else {
+        console.log('Twilio not configured, skipping WhatsApp message');
+      }
       
     } catch (pdfError) {
-      console.error('Error in PDF generation or sending:', pdfError);
+      console.error('Error in PDF generation or sending:');
+      console.error('- Error message:', pdfError.message);
+      console.error('- Error stack:', pdfError.stack);
+      
+      // Clean up local file if it exists
+      try {
+        if (typeof filePath !== 'undefined' && fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          console.log('Cleaned up PDF file after error');
+        }
+      } catch (cleanupError) {
+        console.error('Error during file cleanup:', cleanupError);
+      }
       
       // Send a text message as fallback on PDF error
       if (twilioClient && process.env.TWILIO_PHONE_NUMBER) {
         try {
+          console.log('Sending fallback message due to PDF error...');
           await twilioClient.messages.create({
-            body: `Hello ${patient.name}, your prescription is ready. Details: ${updatedVisit.prescription}`,
+            body: `Hello ${patient.name}, your prescription is ready. Please contact the clinic for your prescription document. Details: ${updatedVisit.prescription}`,
             from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
             to: `whatsapp:+91${patient.contactNumber}`,
           });
@@ -348,4 +416,60 @@ router.put('/:id/visit/:visitId', authenticate, async (req, res) => {
   }
 });
 
+
+// Debug route to test file serving
+router.get('/test-file/:filename', (req, res) => {
+  try {
+    const filename = req.params.filename;
+    const filePath = path.join(__dirname, '../temp', filename);
+    
+    console.log('Trying to serve file:', filePath);
+    console.log('File exists:', fs.existsSync(filePath));
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found', path: filePath });
+    }
+    
+    const stats = fs.statSync(filePath);
+    console.log('File size:', stats.size);
+    
+    // Serve the file directly
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+    
+    console.log('File served successfully');
+    
+  } catch (error) {
+    console.error('Error serving file:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Debug route to list temp files
+router.get('/debug/temp-files', (req, res) => {
+  try {
+    const tempDir = path.join(__dirname, '../temp');
+    console.log('Temp directory:', tempDir);
+    
+    if (!fs.existsSync(tempDir)) {
+      return res.json({ error: 'Temp directory does not exist', path: tempDir });
+    }
+    
+    const files = fs.readdirSync(tempDir);
+    console.log('Files in temp:', files);
+    
+    res.json({ 
+      tempDir, 
+      files,
+      fileCount: files.length 
+    });
+    
+  } catch (error) {
+    console.error('Error reading temp directory:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 module.exports = router;
