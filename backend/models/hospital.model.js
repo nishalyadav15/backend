@@ -35,7 +35,7 @@ const hospitalSchema = new mongoose.Schema(
       },
       primaryColor: {
         type: String,
-        default: '#1a56db',
+        default: '#ffffff',
       },
       letterheadText: {
         type: String,

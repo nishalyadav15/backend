@@ -104,7 +104,7 @@ async function createHospital() {
       email: 'hospital@example.com',
       branding: {
         logo: getDefaultLogo(),
-        primaryColor: '#1a56db',
+        primaryColor: '#00000',
         letterheadText: 'Providing Quality Healthcare Since 2000',
       },
       doctorName: 'Dr. John Doe',
